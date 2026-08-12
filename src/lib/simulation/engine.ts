@@ -8,6 +8,7 @@ import {
   buildRoundPrompt,
   buildConsensusPrompt,
 } from './prompt-builder';
+import { evaluateRules } from './rule-engine';
 import type {
   ScenarioConfig,
   SimulationSession,
@@ -22,6 +23,10 @@ import type {
   ThinkingHistory,
   DecisionTrace,
 } from './types';
+
+function clamp01(value: number): number {
+  return Math.min(1, Math.max(0, value));
+}
 
 /** 创建模拟会话 */
 export function createSession(scenario: ScenarioConfig): SimulationSession {
@@ -59,6 +64,17 @@ export function createSession(scenario: ScenarioConfig): SimulationSession {
     history: [],
     finalOutcome: null,
     createdAt: Date.now(),
+    baseline: {
+      agents: Object.fromEntries(
+        scenario.agents.map((a) => [a.id, structuredClone(a)])
+      ),
+      environment: scenario.environment
+        ? structuredClone(scenario.environment)
+        : undefined,
+      relationships: scenario.relationships
+        ? structuredClone(scenario.relationships)
+        : undefined,
+    },
   };
 }
 
@@ -159,6 +175,57 @@ async function executeRound(
     timestamp: Date.now(),
   });
 
+  // ---- 轮前规则求值：基于基线快照应用环境/偏好/资源/关系/约束变更 ----
+  const prevConsensus = session.history[round.id - 1]?.consensusLevel ?? 0.5;
+  const rules = session.scenario.rules ?? [];
+  const baseline = session.baseline;
+  let discourseHints: Record<string, string[]> = {};
+
+  if (rules.length > 0 && baseline) {
+    const preResult = evaluateRules(
+      rules,
+      {
+        agents: baseline.agents,
+        environment: baseline.environment,
+        relationships: baseline.relationships,
+      },
+      {
+        round: round.id,
+        consensusLevel: prevConsensus,
+        proposalConflictLevel: 1 - prevConsensus,
+      },
+      'pre'
+    );
+
+    for (const [id, cfg] of Object.entries(preResult.agents)) {
+      if (session.agentStates[id]) {
+        session.agentStates[id].config = cfg;
+      }
+    }
+    session.scenario.environment = preResult.environment;
+    session.scenario.relationships = { relationships: preResult.relationships };
+    discourseHints = preResult.discourseHints;
+
+    if (preResult.logs.length > 0) {
+      onEvent({
+        type: 'rule_evaluated',
+        round: round.id,
+        arena: round.arenaType,
+        data: { phase: 'pre', logs: preResult.logs },
+        timestamp: Date.now(),
+      });
+    }
+  }
+
+  // 信任动态覆盖：模型评估的信任变化持续影响后续轮次的 prompt
+  // （关系网络每轮从基线重置后，用 trustMap 中的动态值覆盖 trust）
+  for (const rel of session.scenario.relationships?.relationships ?? []) {
+    const trust = session.agentStates[rel.from]?.trustMap[rel.to];
+    if (typeof trust === 'number') {
+      rel.trust = trust;
+    }
+  }
+
   // 按发言顺序让每个 Agent 发言
   console.log(`[引擎] 轮次${round.id}发言顺序:`, round.speakingOrder);
   for (const agentId of round.speakingOrder) {
@@ -169,7 +236,11 @@ async function executeRound(
       continue;
     }
 
-    const systemPrompt = buildSystemPrompt(agentState.config);
+    const systemPrompt = buildSystemPrompt(
+      agentState.config,
+      session.scenario.environment,
+      session.scenario.relationships?.relationships
+    );
 
     // 构建模拟状态供 prompt-builder 使用
     const simState: SimulationState = {
@@ -183,71 +254,96 @@ async function executeRound(
 
     const roundPrompt = buildRoundPrompt(agentState.config, round, simState);
     const historyContext = buildHistoryContext(allPreviousActions, roundActions);
-    const userPrompt = roundPrompt + historyContext;
+    const hintText = (discourseHints[agentId] ?? []).join('；');
+    const userPrompt =
+      (hintText ? `【规则提示】${hintText}\n\n` : '') +
+      roundPrompt +
+      historyContext;
 
     // 使用Agent自己的API配置，如果没有则使用默认配置
     const apiConfig = agentState.config.apiConfig;
-
-    // 记录思考步骤
-    const thinkingSteps: ThinkingStep[] = [
-      {
-        phase: 'analysis',
-        content: `分析当前局势：${round.name}。${round.description}`,
-        timestamp: Date.now(),
-        factors: [round.arenaType, `轮次${round.id + 1}`],
-        confidence: 0.8,
-      },
-      {
-        phase: 'strategy',
-        content: `基于自身立场（${agentState.config.role}）制定策略。考虑偏好权重和硬约束。`,
-        timestamp: Date.now(),
-        factors: ['偏好权重', '硬约束', '资源禀赋'],
-        confidence: 0.75,
-      },
-    ];
-
-    // 如果有API配置，记录配置信息
-    if (apiConfig) {
-      thinkingSteps.push({
-        phase: 'output',
-        content: `使用模型: ${apiConfig.model}，温度: ${apiConfig.temperature}`,
-        timestamp: Date.now(),
-        factors: ['API配置'],
-      });
-    }
-
-    // 将思考步骤存储到agentState中（供前端读取）
-    if (!agentState.thinkingHistory) {
-      agentState.thinkingHistory = [];
-    }
-    agentState.thinkingHistory.push({ round: round.id, steps: thinkingSteps });
-
-    onEvent({
-      type: 'agent_thinking',
-      round: round.id,
-      arena: round.arenaType,
-      data: { agentId, agentName: agentState.config.name, thinkingSteps },
-      timestamp: Date.now(),
-    });
 
     try {
       // 记录API调用信息
       const apiKeyInfo = apiConfig?.apiKey ? `${apiConfig.apiKey.substring(0, 10)}...` : '未设置';
       console.log(`[引擎] Agent ${agentState.config.name} 调用API: apiKey=${apiKeyInfo}, baseUrl=${apiConfig?.baseUrl || '默认'}, model=${apiConfig?.model || '默认'}`);
-      
+
       const response = await callDeepSeek(
         [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt },
         ],
-        { 
-          temperature: apiConfig?.temperature ?? 0.7, 
+        {
+          temperature: apiConfig?.temperature ?? 0.7,
           maxTokens: apiConfig?.maxTokens ?? 800,
           apiKey: apiConfig?.apiKey,
           baseUrl: apiConfig?.baseUrl,
           model: apiConfig?.model
         }
       );
+
+      // ---- 思考链：优先使用模型真实推理链（reasoning_content） ----
+      const thinkingSteps: ThinkingStep[] = [];
+      let modelReasoning: string | null = null;
+      const captureReasoning = apiConfig?.enableThinkingTrace !== false;
+
+      if (captureReasoning && response.reasoning) {
+        modelReasoning = response.reasoning;
+        const blocks = response.reasoning
+          .split(/\n{2,}/)
+          .map((s) => s.trim())
+          .filter(Boolean);
+        blocks.forEach((block, idx) => {
+          thinkingSteps.push({
+            phase: idx === 0 ? 'analysis' : 'strategy',
+            content: block,
+            timestamp: Date.now(),
+          });
+        });
+      }
+
+      // 诚实回退：无推理链时生成带明确标注的启发式摘要（非模型真实思考）
+      if (thinkingSteps.length === 0) {
+        thinkingSteps.push(
+          {
+            phase: 'analysis',
+            content:
+              `（未获取到模型推理链 reasoning_content，以下为基于角色设定的启发式决策摘要，不代表模型真实思考过程）\n` +
+              `分析当前局势：${round.name}。${round.description}`,
+            timestamp: Date.now(),
+            factors: [round.arenaType, `轮次${round.id + 1}`],
+          },
+          {
+            phase: 'strategy',
+            content: `基于自身立场（${agentState.config.role}）制定策略，考虑偏好权重和硬约束。`,
+            timestamp: Date.now(),
+            factors: ['偏好权重', '硬约束', '资源禀赋'],
+          }
+        );
+      }
+
+      if (apiConfig) {
+        thinkingSteps.push({
+          phase: 'output',
+          content: `使用模型: ${apiConfig.model}，温度: ${apiConfig.temperature}`,
+          timestamp: Date.now(),
+          factors: ['API配置'],
+        });
+      }
+
+      // 将思考步骤存储到agentState中（供前端读取）
+      if (!agentState.thinkingHistory) {
+        agentState.thinkingHistory = [];
+      }
+      agentState.thinkingHistory.push({ round: round.id, steps: thinkingSteps });
+
+      onEvent({
+        type: 'agent_thinking',
+        round: round.id,
+        arena: round.arenaType,
+        data: { agentId, agentName: agentState.config.name, thinkingSteps },
+        timestamp: Date.now(),
+      });
 
       const parsed = parseAgentOutput(response.content);
 
@@ -295,6 +391,8 @@ async function executeRound(
         round: round.id,
         roundName: round.name,
         timestamp: Date.now(),
+        traceType: modelReasoning ? 'model_reasoning' : 'heuristic',
+        modelReasoning,
         thinkingSteps: thinkingSteps,
         inputContext: {
           systemPrompt: systemPrompt.substring(0, 500) + '...',
@@ -309,7 +407,9 @@ async function executeRound(
             maxTokens: apiConfig?.maxTokens ?? 800,
           },
         },
-        decisionRationale: `基于${thinkingSteps[0]?.content || '分析'}，采取${thinkingSteps[1]?.content || '策略'}，最终生成发言内容。`,
+        decisionRationale: modelReasoning
+          ? `模型推理链（reasoning_content）共 ${thinkingSteps.length - (apiConfig ? 1 : 0)} 段，已按顺序记录。`
+          : '未获取到模型推理链，决策依据为基于角色设定的启发式摘要。',
       };
       
       session.decisionTraces.push(decisionTrace);
@@ -347,19 +447,83 @@ async function executeRound(
 
   // 本轮结束后进行共识评估
   const consensusEval = await evaluateConsensus(session, round, roundActions);
+  let finalConsensus = consensusEval.consensus_level;
+
+  // ---- 共识后规则求值：仅应用 modify_consensus，修正最终共识度 ----
+  if (rules.length > 0 && baseline) {
+    const postResult = evaluateRules(
+      rules,
+      {
+        agents: baseline.agents,
+        environment: baseline.environment,
+        relationships: baseline.relationships,
+      },
+      {
+        round: round.id,
+        consensusLevel: consensusEval.consensus_level,
+        proposalConflictLevel: 1 - consensusEval.consensus_level,
+      },
+      'post'
+    );
+    finalConsensus = clamp01(consensusEval.consensus_level + postResult.consensusDelta);
+
+    if (postResult.logs.length > 0) {
+      onEvent({
+        type: 'rule_evaluated',
+        round: round.id,
+        arena: round.arenaType,
+        data: { phase: 'post', logs: postResult.logs },
+        timestamp: Date.now(),
+      });
+    }
+  }
 
   // 生成本轮小结（核心争议点 + 达成共识）
   const roundSummary = await generateRoundSummary(session, round, roundActions, consensusEval);
+
+  // ---- 信任/让步动态：应用模型评估的让步与关系信任变化 ----
+  if (roundSummary.concessions) {
+    for (const c of roundSummary.concessions) {
+      const st = session.agentStates[c.agentId];
+      if (st && typeof c.concession === 'number') {
+        st.concessionHistory.push(clamp01(c.concession));
+      }
+    }
+  }
+  if (roundSummary.trustUpdates) {
+    for (const t of roundSummary.trustUpdates) {
+      const fromState = session.agentStates[t.from];
+      if (fromState && typeof t.delta === 'number' && fromState.trustMap[t.to] !== undefined) {
+        fromState.trustMap[t.to] = clamp01(fromState.trustMap[t.to] + t.delta);
+      }
+    }
+    // 信任变化同步回关系网络，影响后续轮次的 prompt
+    for (const rel of session.scenario.relationships?.relationships ?? []) {
+      const trust = session.agentStates[rel.from]?.trustMap[rel.to];
+      if (typeof trust === 'number') {
+        rel.trust = trust;
+      }
+    }
+  }
 
   onEvent({
     type: 'round_end',
     round: round.id,
     arena: round.arenaType,
     data: {
-      consensusLevel: consensusEval.consensus_level,
+      consensusLevel: finalConsensus,
       summary: consensusEval.summary,
       keyDecisions: consensusEval.key_decisions,
     },
+    timestamp: Date.now(),
+  });
+
+  // 共识度实时推送（前端共识度条依赖该事件）
+  onEvent({
+    type: 'consensus_update',
+    round: round.id,
+    arena: round.arenaType,
+    data: { consensusScore: Math.round(finalConsensus * 100) },
     timestamp: Date.now(),
   });
 
@@ -375,6 +539,9 @@ async function executeRound(
       consensus: roundSummary.consensus,
       indicatorInteractions: roundSummary.indicatorInteractions,
       ruleInfluences: roundSummary.ruleInfluences,
+      stanceChanges: roundSummary.stanceChanges ?? [],
+      concessions: roundSummary.concessions ?? [],
+      trustUpdates: roundSummary.trustUpdates ?? [],
     },
     timestamp: Date.now(),
   });
@@ -384,7 +551,7 @@ async function executeRound(
     round: round.id,
     actions: roundActions,
     summary: consensusEval.summary,
-    consensusLevel: consensusEval.consensus_level,
+    consensusLevel: finalConsensus,
     keyDecisions: consensusEval.key_decisions,
   };
 }
@@ -440,9 +607,20 @@ async function generateRoundSummary(
   consensus: string[];
   indicatorInteractions: string[];
   ruleInfluences: string[];
+  stanceChanges: Array<{ agentId: string; before: string; after: string }>;
+  concessions: Array<{ agentId: string; concession: number }>;
+  trustUpdates: Array<{ from: string; to: string; delta: number }>;
 }> {
   if (actions.length === 0) {
-    return { disputes: [], consensus: [], indicatorInteractions: [], ruleInfluences: [] };
+    return {
+      disputes: [],
+      consensus: [],
+      indicatorInteractions: [],
+      ruleInfluences: [],
+      stanceChanges: [],
+      concessions: [],
+      trustUpdates: [],
+    };
   }
 
   // 构建摘要提示
@@ -464,14 +642,20 @@ ${actionsText}
   "disputes": ["核心争议点1（涉及哪些Agent的哪些指标冲突）", "核心争议点2"],
   "consensus": ["达成的共识1", "达成的共识2"],
   "indicatorInteractions": ["指标A（Agent1）压制了指标B（Agent2），导致...", "指标C与指标D相互权衡，最终..."],
-  "ruleInfluences": ["博弈规则X导致Agent1采取Y策略", "Agent2的Z约束使其无法同意..."]
+  "ruleInfluences": ["博弈规则X导致Agent1采取Y策略", "Agent2的Z约束使其无法同意..."],
+  "stanceChanges": [{"agentId": "ndrc", "before": "初始立场", "after": "调整后立场"}],
+  "concessions": [{"agentId": "mof", "concession": 0.3}],
+  "trustUpdates": [{"from": "ndrc", "to": "moh", "delta": 0.15}]
 }
 
 要求：
 1. disputes: 列出2-4个核心争议点，说明是哪些Agent之间的哪些指标在冲突
 2. consensus: 列出1-3个达成的共识
 3. indicatorInteractions: 说明哪些偏好指标在相互作用、谁压倒了谁
-4. ruleInfluences: 说明博弈规则和Agent约束如何影响了决策`;
+4. ruleInfluences: 说明博弈规则和Agent约束如何影响了决策
+5. stanceChanges: 对比本轮发言与前一轮，列出立场发生明显变化的Agent（首轮可基于首轮发言与初始角色设定对比）
+6. concessions: 每个Agent本轮向对方立场靠拢的程度，取值0-1（0=毫不让步，1=完全让步）
+7. trustUpdates: 根据本轮互动中的合作/冲突表现，给出每对关系信任度的增减量，取值-1到1`;
 
   try {
     const response = await callDeepSeek(
@@ -486,6 +670,9 @@ ${actionsText}
       consensus: parsed.consensus || [],
       indicatorInteractions: parsed.indicatorInteractions || [],
       ruleInfluences: parsed.ruleInfluences || [],
+      stanceChanges: parsed.stanceChanges || [],
+      concessions: parsed.concessions || [],
+      trustUpdates: parsed.trustUpdates || [],
     };
   } catch {
     return {
@@ -493,6 +680,9 @@ ${actionsText}
       consensus: consensusEval.key_decisions || [],
       indicatorInteractions: [],
       ruleInfluences: [],
+      stanceChanges: [],
+      concessions: [],
+      trustUpdates: [],
     };
   }
 }
@@ -503,6 +693,7 @@ export async function* runSimulation(
 ): AsyncGenerator<SimulationEvent> {
   session.status = 'running';
   const allActions: DiscourseAction[] = [];
+  let lastConsensus = 0.5;
 
   for (const round of session.scenario.protocol.rounds) {
     session.currentRound = round.id;
@@ -516,10 +707,22 @@ export async function* runSimulation(
       allActions.push(action);
     }
     session.history.push(output);
+    lastConsensus = output.consensusLevel;
   }
 
   session.status = 'completed';
   session.finalOutcome = generateFinalOutcome(session);
+
+  yield {
+    type: 'simulation_end',
+    round: session.scenario.protocol.rounds.length - 1,
+    arena: session.currentArena,
+    data: {
+      finalConsensus: Math.round(lastConsensus * 100),
+      totalRounds: session.scenario.protocol.rounds.length,
+    },
+    timestamp: Date.now(),
+  };
 
   yield {
     type: 'simulation_complete',
@@ -563,6 +766,7 @@ export async function runSimulationWithEvents(
 ): Promise<void> {
   session.status = 'running';
   const allActions: DiscourseAction[] = [];
+  let lastConsensus = 0.5;
 
   for (const round of session.scenario.protocol.rounds) {
     session.currentRound = round.id;
@@ -574,10 +778,22 @@ export async function runSimulationWithEvents(
       allActions.push(action);
     }
     session.history.push(output);
+    lastConsensus = output.consensusLevel;
   }
 
   session.status = 'completed';
   session.finalOutcome = generateFinalOutcome(session);
+
+  onEvent({
+    type: 'simulation_end',
+    round: session.scenario.protocol.rounds.length - 1,
+    arena: session.currentArena,
+    data: {
+      finalConsensus: Math.round(lastConsensus * 100),
+      totalRounds: session.scenario.protocol.rounds.length,
+    },
+    timestamp: Date.now(),
+  });
 
   onEvent({
     type: 'simulation_complete',

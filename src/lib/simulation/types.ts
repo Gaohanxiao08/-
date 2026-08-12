@@ -349,6 +349,8 @@ export interface ScenarioConfig {
   description: string;
   agents: AgentConfig[];
   protocol: ProtocolConfig;
+  /** 可选的 If-Then 规则集（由前端在发起模拟时传入） */
+  rules?: IfThenRule[];
   /** 环境配置 */
   environment?: EnvironmentConfig;
   /** 关系网络 */
@@ -380,6 +382,12 @@ export interface SimulationSession {
   finalOutcome: Record<string, unknown> | null;
   createdAt: number;
   decisionTraces?: DecisionTrace[];
+  /** 本轮模拟的基线快照（规则求值以此为基础，避免跨轮次叠加） */
+  baseline?: {
+    agents: Record<string, AgentConfig>;
+    environment?: EnvironmentConfig;
+    relationships?: RelationshipNetwork;
+  };
 }
 
 /** SSE 事件类型 */
@@ -393,6 +401,7 @@ export type SimulationEventType =
   | 'simulation_end'
   | 'simulation_complete'
   | 'decision_trace'
+  | 'rule_evaluated'
   | 'error';
 
 /** 博弈规则 */
@@ -523,9 +532,9 @@ export interface RuleEvaluationLog {
   conditionsMet: boolean;
   conditionDetails: {
     path: string;
-    actualValue: number;
+    actualValue: number | string | boolean | (number | string)[];
     operator: RuleOperator;
-    threshold: number;
+    threshold: number | string | boolean | (number | string)[];
     met: boolean;
   }[];
   effectsApplied: RuleEffect[];
@@ -552,6 +561,11 @@ export interface DecisionTrace {
   round: number;
   roundName: string;
   timestamp: number;
+
+  /** 追溯来源：model_reasoning=模型真实推理链；heuristic=启发式摘要（未获取到推理链） */
+  traceType: 'model_reasoning' | 'heuristic';
+  /** DeepSeek reasoning_content 原始文本（可能为空） */
+  modelReasoning?: string | null;
   
   // 思考过程（DeepSeek完整思考链）
   thinkingSteps: ThinkingStep[];
@@ -595,4 +609,3 @@ export interface DecisionTrace {
   triggeredRules?: string[];
   finalUtility?: number;
 }
-

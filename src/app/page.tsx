@@ -49,6 +49,14 @@ const C = {
 
 const AGENT_COLORS = ['#c41e3a', '#d4a843', '#2d8a4e', '#6366f1', '#ec4899', '#14b8a6', '#f97316', '#8b5cf6'];
 
+// ===== 规则日志值格式化（兼容数值/字符串/布尔/数组） =====
+const formatRuleValue = (v: number | string | boolean | (number | string)[]): string => {
+  if (Array.isArray(v)) return v.map(formatRuleValue).join('/');
+  if (typeof v === 'number') return `${(v * 100).toFixed(0)}%`;
+  if (typeof v === 'boolean') return v ? '是' : '否';
+  return String(v);
+};
+
 // ===== 可用AI模型列表 =====
 const AVAILABLE_MODELS = [
   { id: 'deepseek-chat', name: 'DeepSeek-V3 (通用对话)', provider: 'deepseek' },
@@ -74,6 +82,7 @@ const API_CONFIG_STORAGE_KEY = 'coze_sim_api_configs';
 
 const saveApiConfigsToStorage = (agents: AgentConfig[]) => {
   try {
+    if (typeof window === 'undefined') return;
     const configs = agents.map(a => ({ id: a.id, apiConfig: a.apiConfig }));
     localStorage.setItem(API_CONFIG_STORAGE_KEY, JSON.stringify(configs));
   } catch (e) {
@@ -83,6 +92,7 @@ const saveApiConfigsToStorage = (agents: AgentConfig[]) => {
 
 const loadApiConfigsFromStorage = (): Map<string, AgentApiConfig> => {
   try {
+    if (typeof window === 'undefined') return new Map();
     const stored = localStorage.getItem(API_CONFIG_STORAGE_KEY);
     if (!stored) return new Map();
     const configs: Array<{ id: string; apiConfig: AgentApiConfig }> = JSON.parse(stored);
@@ -296,7 +306,7 @@ export default function Page() {
   // ===== 状态 =====
   const [scenarios, setScenarios] = useState<{ id: string; title: string; description: string }[]>([]);
   const [selectedScenario, setSelectedScenario] = useState('healthcare_reform');
-  const [agents, setAgents] = useState<AgentConfig[]>(createDefaultAgents());
+  const [agents, setAgents] = useState<AgentConfig[]>(createDefaultAgents);
   const [rules, setRules] = useState<GameRule[]>(DEFAULT_RULES);
   const [isRunning, setIsRunning] = useState(false);
   const [events, setEvents] = useState<SimulationEvent[]>([]);
@@ -408,6 +418,16 @@ export default function Page() {
               // 收集决策追溯数据
               if (event.type === 'decision_trace') {
                 setDecisionTraces(prev => [...prev, event.data as unknown as DecisionTrace]);
+              }
+              // 收集规则评估日志
+              if (event.type === 'rule_evaluated') {
+                const logs = (event.data as { logs: RuleEvaluationLog[] }).logs ?? [];
+                if (logs.length > 0) {
+                  setRuleEngine(prev => ({
+                    ...prev,
+                    evaluationLog: [...prev.evaluationLog, ...logs],
+                  }));
+                }
               }
               // 记录错误事件到控制台，帮助调试
               if (event.type === 'error') {
@@ -868,7 +888,7 @@ export default function Page() {
                                   <div style={{ marginTop: 2, paddingLeft: 14, fontSize: 9, color: C.textMuted, fontFamily: 'monospace' }}>
                                     {log.conditionDetails.map((cd, ci) => (
                                       <span key={ci} style={{ marginRight: 8, color: cd.met ? '#16a34a' : '#dc2626' }}>
-                                        {cd.path.split('.').pop()}: {(cd.actualValue * 100).toFixed(0)}% {cd.operator === 'gte' ? '≥' : cd.operator} {(cd.threshold * 100).toFixed(0)}%
+                                        {cd.path.split('.').pop()}: {formatRuleValue(cd.actualValue)} {cd.operator === 'gte' ? '≥' : cd.operator === 'lte' ? '≤' : cd.operator} {formatRuleValue(cd.threshold)}
                                       </span>
                                     ))}
                                   </div>

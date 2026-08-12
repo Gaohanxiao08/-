@@ -2,10 +2,10 @@
 // API Route: /api/simulate — SSE 流式推送模拟过程
 // ============================================================
 
-import { NextRequest } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { createSession, runSimulationWithEvents } from '@/lib/simulation/engine';
 import { scenarioRegistry } from '@/lib/simulation/scenarios';
-import type { SimulationEvent, SimulationSession, AgentConfig, EnvironmentConfig, AgentRelationship, RelationshipNetwork } from '@/lib/simulation/types';
+import type { SimulationEvent, SimulationSession, AgentConfig, EnvironmentConfig, RelationshipNetwork, IfThenRule } from '@/lib/simulation/types';
 
 function handleSimulation(session: SimulationSession, scenarioId: string) {
   const encoder = new TextEncoder();
@@ -67,10 +67,11 @@ export async function POST(request: NextRequest) {
     const customAgentConfigsObj = body.agentConfigs as Record<string, Partial<AgentConfig>> | undefined;
     const customEnvironment = body.environment as Partial<EnvironmentConfig> | undefined;
     const customRelationships = body.relationships as RelationshipNetwork | undefined;
+    const customRules = body.rules as IfThenRule[] | undefined;
 
     const scenario = scenarioRegistry[scenarioId];
     if (!scenario) {
-      return Response.json(
+      return NextResponse.json(
         { error: `Unknown scenario: ${scenarioId}` },
         { status: 400 }
       );
@@ -89,6 +90,7 @@ export async function POST(request: NextRequest) {
 
     // 合并关系配置
     const relationships = customRelationships ?? scenario.relationships;
+    const rules = Array.isArray(customRules) ? customRules : scenario.rules;
 
     // 如果有自定义Agent配置，合并到场景中
     // 优先使用 customAgentsArray（前端发送的完整Agent数组）
@@ -215,12 +217,13 @@ export async function POST(request: NextRequest) {
           ),
         })),
       },
+      rules,
     };
     const session = createSession(modifiedScenario);
     return handleSimulation(session, scenarioId);
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : 'Unknown error';
-    return Response.json(
+    return NextResponse.json(
       { error: `Failed to start simulation: ${errorMsg}` },
       { status: 500 }
     );
@@ -244,5 +247,5 @@ export async function GET() {
     })),
   }));
 
-  return Response.json({ scenarios });
+  return NextResponse.json({ scenarios });
 }

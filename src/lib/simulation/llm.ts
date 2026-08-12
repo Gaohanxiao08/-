@@ -11,6 +11,8 @@ interface ChatMessage {
 
 interface LLMResponse {
   content: string;
+  /** DeepSeek-R1 等推理模型的思考链（reasoning_content），普通对话模型可能为空 */
+  reasoning?: string;
   usage?: {
     promptTokens: number;
     completionTokens: number;
@@ -67,6 +69,7 @@ export async function callDeepSeek(
 
   return {
     content: choice?.message?.content ?? '',
+    reasoning: choice?.message?.reasoning_content ?? undefined,
     usage: data.usage
       ? {
           promptTokens: data.usage.prompt_tokens,

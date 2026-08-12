@@ -58,6 +58,30 @@ const POWER_TYPE_LABELS: Record<string, string> = {
   advisory: '咨询权力',
 };
 
+/** 六维权力配置中文映射 */
+const POWER_FIELD_LABELS: Record<string, string> = {
+  agendaSetting: '议程设置权',
+  veto: '否决权',
+  resourceAllocation: '资源分配权',
+  informationControl: '信息控制权',
+  personnel: '人事权',
+  personnelMobility: '人事调动权',
+  enforcement: '执行强制权',
+};
+
+/** 话术风格参数中文映射 */
+const DISCOURSE_FIELD_LABELS: Record<string, string> = {
+  formalityLevel: '正式程度',
+  deferenceToSuperior: '对上级的服从性',
+  ambiguityPreference: '模糊措辞偏好',
+  consensusSeeking: '寻求共识倾向',
+  conflictAvoidance: '冲突回避倾向',
+  technicalVocabulary: '技术术语使用频率',
+  partyLanguageUsage: '党的语言使用频率',
+  localInterestEmphasis: '地方利益强调程度',
+  nationalAlignment: '与中央保持一致程度',
+};
+
 /** 偏好维度翻译 */
 function translatePreference(key: string): string {
   return PREFERENCE_LABELS[key] || key;
@@ -80,6 +104,7 @@ export function buildSystemPrompt(
   const inc = agent.incentives;
   const resp = agent.responsibilities;
   const cs = agent.constraintSet;
+  const sections: string[] = [];
 
   // 偏好权重排序（从高到低）
   const sortedPrefs = Object.entries(agent.preferences)
@@ -93,12 +118,34 @@ export function buildSystemPrompt(
     .map(([k, v]) => `${translateResource(k)}(${v.toFixed(1)})`)
     .join('、');
 
+  // 权力配置描述
+  const powerSection = `
+六、权力配置（你在博弈中的实际权力）
+═══════════════════════════════════════
+${Object.entries(agent.power)
+  .filter(([k]) => POWER_FIELD_LABELS[k])
+  .map(([k, v]) => `• ${POWER_FIELD_LABELS[k]}：${(v * 100).toFixed(0)}%`)
+  .join('\n')}
+${pos.vetoPower ? '• 特别说明：你拥有制度性一票否决权，这是你的底线筹码。' : ''}`;
+  sections.push(powerSection);
+
+  // 话术风格参数描述
+  const styleParams = Object.entries(agent.discourseStyle)
+    .filter(([k]) => k !== 'agentId' && DISCOURSE_FIELD_LABELS[k])
+    .map(([k, v]) => `• ${DISCOURSE_FIELD_LABELS[k]}：${(Number(v) * 100).toFixed(0)}%`);
+  sections.push(`
+七、话术风格参数（发言必须贴合这些参数）
+═══════════════════════════════════════
+${styleParams.join('\n')}
+
+说明：正式程度越高，语言越官方；模糊措辞偏好越高，越避免给出明确承诺；寻求共识倾向越高，越主动促成一致；冲突回避倾向越高，越避免正面交锋；党的语言使用频率越高，越多使用政治话语；与中央保持一致程度越高，越强调服从中央部署。`);
+
   // 环境描述
   let envSection = '';
   if (environment) {
     envSection = `
 ═══════════════════════════════════════
-六、当前环境背景
+八、当前环境背景
 ═══════════════════════════════════════
 【政治环境】
 • 中央权威强度：${(environment.political.centralAuthority * 100).toFixed(0)}%
@@ -124,6 +171,7 @@ export function buildSystemPrompt(
 • 信息透明度：${(environment.institutional.informationTransparency * 100).toFixed(0)}%
 • 协调机制成熟度：${(environment.institutional.coordinationMaturity * 100).toFixed(0)}%
 `;
+    sections.push(envSection.trim());
   }
 
   // 关系网络描述
@@ -133,7 +181,7 @@ export function buildSystemPrompt(
     if (myRels.length > 0) {
       relSection = `
 ═══════════════════════════════════════
-${envSection ? '七' : '六'}、关系网络（你与其他参与者的关系）
+九、关系网络（你与其他参与者的关系）
 ═══════════════════════════════════════
 ${myRels.map(r => {
   const otherId = r.from === agent.id ? r.to : r.from;
@@ -141,6 +189,7 @@ ${myRels.map(r => {
   return `• ${direction}${otherId}：${RELATIONSHIP_TYPE_LABELS[r.type]}（强度${(r.strength * 100).toFixed(0)}%，信任度${(r.trust * 100).toFixed(0)}%）`;
 }).join('\n')}
 `;
+      sections.push(relSection.trim());
     }
   }
 
@@ -181,14 +230,13 @@ ${inc.map(i => `• ${i.type}：强度 ${(i.intensity * 100).toFixed(0)}%，来�
 五、偏好权重（效用函数 U(a) = Σ w × g(a)）
 ═══════════════════════════════════════
 ${sortedPrefs}
-${envSection}${relSection}
-═══════════════════════════════════════
-${envSection || relSection ? (envSection && relSection ? "八" : "七") : "六"}、资源禀赋
+${sections.join('\n')}
+
+十、资源禀赋
 ═══════════════════════════════════════
 ${sortedResources}
 
-═══════════════════════════════════════
-${envSection || relSection ? (envSection && relSection ? "九" : "八") : "七"}、输出格式（严格遵守）
+十一、输出格式（严格遵守）
 ═══════════════════════════════════════
 你的每次发言必须严格包含两部分，用以下格式输出：
 
