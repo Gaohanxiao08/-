@@ -1,10 +1,29 @@
 # 中国政策过程多智能体计算模拟平台
 
-一个基于 DeepSeek 大语言模型的多智能体博弈模拟系统，用于学术研究中国政策制定过程中的多方协商与决策机制。
+> **原创声明**：本项目为 [@Gaohanxiao08](https://github.com/Gaohanxiao08) 原创开发，拥有完整知识产权。
+
+<div align="center">
+
+**作者**: 笑笑 (Gaohanxiao08)  
+**项目类型**: 学术研究工具  
+**创建时间**: 2025年
+
+[![Original Work](https://img.shields.io/badge/Original-Work-blue)](https://github.com/Gaohanxiao08/-)
+[![Author](https://img.shields.io/badge/Author-笑笑-red)](https://github.com/Gaohanxiao08)
+
+</div>
+
+---
+
+## 版权声明
+
+Copyright © 2025 笑笑 (Gaohanxiao08). All Rights Reserved.
+
+本项目为作者独立开发的原创作品，未经作者书面授权，禁止用于商业用途。
 
 ## 项目概述
 
-本平台模拟中国政策制定过程中不同政府部门之间的博弈与协商，通过 AI 智能体扮演不同角色，展示政策制定的复杂性和多元性。
+一个基于 DeepSeek 大语言模型的多智能体博弈模拟系统，用于学术研究中国政策制定过程中的多方协商与决策机制。
 
 ### 核心特性
 
@@ -128,12 +147,29 @@ https://8bm7jyn6jk.coze.site/
 
 ## 许可证
 
-MIT License
+本项目采用 **CC BY-NC 4.0** 许可证 - 详见 [LICENSE](LICENSE) 文件。
+
+**简要说明**：
+- ✅ 可以分享、复制本项目的代码
+- ✅ 可以修改、改编本项目
+- ❌ 不得用于商业用途
+- ✅ 必须署名（注明原作者：笑笑 / Gaohanxiao08）
 
 ## 贡献
 
-欢迎提交 Issue 和 Pull Request。
+欢迎提交 Issue 讨论交流。
 
-## 联系方式
+如需商业合作，请联系作者。
 
-如有问题，请通过 GitHub Issues 反馈。
+## 作者
+
+- **GitHub**: [@Gaohanxiao08](https://github.com/Gaohanxiao08)
+- **项目地址**: https://github.com/Gaohanxiao08/-
+
+---
+
+<div align="center">
+
+**如果这个项目对你有帮助，欢迎给个 Star ⭐ 支持一下！**
+
+</div>
