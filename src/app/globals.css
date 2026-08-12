@@ -1,0 +1,116 @@
+@import "tailwindcss";
+
+/* ============================================================
+   中国政策过程多智能体计算模拟平台 — 全局样式
+   Design Tokens 遵循 DESIGN.md（浅色主题、中国红 + 琥珀金）
+   ============================================================ */
+
+:root {
+  --bg: #faf8f5;
+  --bg-secondary: #f3ede4;
+  --card: #ffffff;
+  --card-hover: #fefcf9;
+  --border: #e8e0d4;
+  --border-light: #f0ebe3;
+  --primary: #c41e3a;
+  --primary-light: #f5e6e9;
+  --primary-dark: #9e1830;
+  --accent: #d4a843;
+  --accent-light: #faf3e0;
+  --info: #e8832a;
+  --success: #10b981;
+  --danger: #ef4444;
+  --text: #1a1a1a;
+  --text-secondary: #666666;
+  --text-muted: #999999;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", "Segoe UI", Inter, sans-serif;
+  font-size: 14px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+code,
+pre,
+.font-mono {
+  font-family: "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+}
+
+button {
+  font-family: inherit;
+}
+
+input,
+select,
+textarea {
+  font-family: inherit;
+}
+
+/* Agent 发言时的状态灯脉冲 */
+@keyframes pulse {
+  0% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.45;
+    transform: scale(0.85);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* 新消息淡入 + 微上移 */
+@keyframes message-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.message-enter {
+  animation: message-in 0.25s ease-out;
+}
+
+/* 滚动条样式（保持学术克制的浅色调） */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--bg-secondary);
+}
+
+::-webkit-scrollbar-thumb {
+  background: #d9d0c2;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #c9bfae;
+}
